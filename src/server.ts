@@ -16,12 +16,40 @@ import { pino } from 'pino';
 import { Boom } from '@hapi/boom';
 import { WhatsAppTracker, ProbeMethod } from './tracker.js';
 import { SignalTracker, getSignalAccounts, checkSignalNumber } from './signal-tracker.js';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+
+// __dirname replacement for ES module
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Configuration
 const SIGNAL_API_URL = process.env.SIGNAL_API_URL || 'http://localhost:8080';
 
 const app = express();
 app.use(cors());
+
+// if a React build has been created, serve it
+const clientBuildPath = path.join(__dirname, '../client/build');
+if (fs.existsSync(clientBuildPath)) {
+    console.log('[SERVER] Serving static client from', clientBuildPath);
+    app.use(express.static(clientBuildPath));
+    // fallback to index.html for any non-API route
+    app.use((req, res) => {
+        res.sendFile(path.join(clientBuildPath, 'index.html'));
+    });
+} else {
+    // basic route so navigating to server port shows something
+    app.get('/', (req, res) => {
+        res.send('Device Activity Tracker API running');
+    });
+
+    // catch-all for unknown API routes
+    app.use((req, res) => {
+        res.status(404).send('404 Not Found');
+    });
+}
 
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
@@ -36,6 +64,7 @@ let isWhatsAppConnected = false;
 let isSignalConnected = false;
 let signalAccountNumber: string | null = null;
 let globalProbeMethod: ProbeMethod = 'delete'; // Default to delete method
+let globalProbeInterval = 20000; // default 20 seconds in ms
 let currentWhatsAppQr: string | null = null; // Store current QR code for new clients
 
 // Platform type for contacts
@@ -48,10 +77,22 @@ interface TrackerEntry {
 
 const trackers: Map<string, TrackerEntry> = new Map(); // JID/Number -> Tracker entry
 
+// Log history of activity for exports/automation
+interface ActivityPoint {
+    timestamp: number;
+    rtt: number;
+    avg?: number;
+    state?: string;
+    threshold?: number;
+}
+const activityLogs: Map<string, ActivityPoint[]> = new Map();
+
 async function connectToWhatsApp() {
+    try {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
 
     sock = makeWASocket({
+        version: [2, 3000, 1034074495], // Add this line
         auth: state,
         logger: pino({ level: 'debug' }),
         markOnlineOnConnect: true,
@@ -94,9 +135,25 @@ async function connectToWhatsApp() {
             console.log(`[MSG UPDATE] JID: ${update.key.remoteJid}, ID: ${update.key.id}, Status: ${update.update.status}, FromMe: ${update.key.fromMe}`);
         }
     });
+    } catch (err) {
+        console.error('[WA] Error during WhatsApp connection initialization:', err);
+        // rethrow so callers can handle it if necessary
+        throw err;
+    }
 }
 
-connectToWhatsApp();
+// Connect to WhatsApp and surface any initialization errors
+connectToWhatsApp().catch(err => {
+    console.error('[WA] Failed to connect to WhatsApp:', err);
+});
+
+// global process handlers to avoid silent failures
+process.on('unhandledRejection', reason => {
+    console.error('[PROCESS] Unhandled Rejection:', reason);
+});
+process.on('uncaughtException', err => {
+    console.error('[PROCESS] Uncaught Exception:', err);
+});
 
 // Signal linking state
 let signalLinkingInProgress = false;
@@ -250,8 +307,9 @@ io.on('connection', (socket) => {
         socket.emit('signal-qr-image', currentSignalQrUrl);
     }
 
-    // Send current probe method to client
+    // Send current probe method and interval to client
     socket.emit('probe-method', globalProbeMethod);
+    socket.emit('probe-interval', globalProbeInterval);
 
     // Send tracked contacts with platform info
     const trackedContacts = Array.from(trackers.entries()).map(([id, entry]) => ({
@@ -309,6 +367,7 @@ io.on('connection', (socket) => {
 
                 console.log(`[SIGNAL] Number ${targetNumber} is registered, starting tracking...`);
                 const tracker = new SignalTracker(SIGNAL_API_URL, signalAccountNumber, targetNumber);
+                tracker.setProbeInterval(globalProbeInterval);
 
                 trackers.set(signalId, { tracker, platform: 'signal' });
 
@@ -316,17 +375,25 @@ io.on('connection', (socket) => {
                     io.emit('tracker-update', {
                         jid: signalId,
                         platform: 'signal',
+                        nextProbeTime: tracker.getNextProbeTime(),
+                        probeInterval: tracker.getProbeInterval(),
                         ...updateData
                     });
+
+                    // record log entry
+                    if (updateData.devices && updateData.devices.length > 0) {
+                        const point: ActivityPoint = {
+                            timestamp: Date.now(),
+                            rtt: updateData.devices[0].rtt,
+                            avg: updateData.devices[0].avg,
+                            state: updateData.devices[0].state,
+                            threshold: updateData.threshold
+                        };
+                        const log = activityLogs.get(signalId) || [];
+                        log.push(point);
+                        activityLogs.set(signalId, log);
+                    }
                 };
-
-                tracker.startTracking();
-
-                socket.emit('contact-added', {
-                    jid: signalId,
-                    number: cleanNumber,
-                    platform: 'signal'
-                });
 
                 io.emit('contact-name', { jid: signalId, name: cleanNumber });
             } catch (err) {
@@ -349,14 +416,31 @@ io.on('connection', (socket) => {
                 if (result?.exists) {
                     const tracker = new WhatsAppTracker(sock, result.jid);
                     tracker.setProbeMethod(globalProbeMethod);
+                    tracker.setProbeInterval(globalProbeInterval);
                     trackers.set(result.jid, { tracker, platform: 'whatsapp' });
 
                     tracker.onUpdate = (updateData) => {
                         io.emit('tracker-update', {
                             jid: result.jid,
                             platform: 'whatsapp',
+                            nextProbeTime: tracker.getNextProbeTime(),
+                            probeInterval: tracker.getProbeInterval(),
                             ...updateData
                         });
+
+                        // record log entry
+                        if (updateData.devices && updateData.devices.length > 0) {
+                            const point: ActivityPoint = {
+                                timestamp: Date.now(),
+                                rtt: updateData.devices[0].rtt,
+                                avg: updateData.devices[0].avg,
+                                state: updateData.devices[0].state,
+                                threshold: updateData.threshold
+                            };
+                            const log = activityLogs.get(result.jid) || [];
+                            log.push(point);
+                            activityLogs.set(result.jid, log);
+                        }
                     };
 
                     tracker.startTracking();
@@ -421,9 +505,44 @@ io.on('connection', (socket) => {
         io.emit('probe-method', method);
         console.log(`Probe method changed to: ${method}`);
     });
+
+    socket.on('set-probe-interval', (ms: number) => {
+        console.log(`Request to change probe interval to ${ms}ms`);
+        if (typeof ms !== 'number' || ms < 60000) {
+            socket.emit('error', { message: 'Probe interval must be a number >= 60000' });
+            return;
+        }
+        globalProbeInterval = ms;
+        for (const entry of trackers.values()) {
+            entry.tracker.setProbeInterval(ms);
+        }
+        io.emit('probe-interval', ms);
+        console.log(`Probe interval changed to: ${ms}ms`);
+    });
 });
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
+
+// Add endpoint for exporting activity logs (JSON)
+app.get('/api/activity/:jid', (req, res) => {
+    const jid = req.params.jid;
+    if (!trackers.has(jid)) {
+        return res.status(404).json({ error: 'Contact not tracked' });
+    }
+    const log = activityLogs.get(jid) || [];
+    res.json({ jid, platform: trackers.get(jid)?.platform, log });
+});
+
+// handle listen errors (e.g. port already in use)
+httpServer.on('error', (err: any) => {
+    if (err.code === 'EADDRINUSE') {
+        console.error(`[SERVER] Port ${PORT} is already in use. ` +
+            `Stop the other process or set a different PORT env variable.`);
+        process.exit(1);
+    }
+    console.error('[SERVER] unexpected error:', err);
+});
+
 httpServer.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });

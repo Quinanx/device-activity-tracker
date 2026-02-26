@@ -105,12 +105,16 @@ export class WhatsAppTracker {
     private lastPresence: string | null = null;
     private probeMethod: ProbeMethod = 'delete'; // Default to delete method
     public onUpdate?: (data: any) => void;
+    private nextProbeTime: number | null = null; // Track when next probe will be sent
+    private probeIntervalMs: number;                  // current interval between probes
+    private static readonly DEFAULT_PROBE_INTERVAL_MS = 300000; // 5 minutes in milliseconds for stealth tracking
 
     constructor(sock: WASocket, targetJid: string, debugMode: boolean = false) {
         this.sock = sock;
         this.targetJid = targetJid;
         this.trackedJids.add(targetJid);
         trackerLogger.setDebugMode(debugMode);
+        this.probeIntervalMs = WhatsAppTracker.DEFAULT_PROBE_INTERVAL_MS;
     }
 
     public setProbeMethod(method: ProbeMethod) {
@@ -120,6 +124,26 @@ export class WhatsAppTracker {
 
     public getProbeMethod(): ProbeMethod {
         return this.probeMethod;
+    }
+
+    public getNextProbeTime(): number | null {
+        return this.nextProbeTime;
+    }
+
+    public setProbeInterval(ms: number) {
+        this.probeIntervalMs = ms;
+        trackerLogger.info(`Probe interval updated to ${ms}ms`);
+        if (this.nextProbeTime) {
+            // if next probe was scheduled further out than the new interval, adjust it
+            const remaining = this.nextProbeTime - Date.now();
+            if (remaining > ms) {
+                this.nextProbeTime = Date.now() + ms;
+            }
+        }
+    }
+
+    public getProbeInterval(): number {
+        return this.probeIntervalMs;
     }
 
     /**
@@ -192,12 +216,16 @@ export class WhatsAppTracker {
 
     private async probeLoop() {
         while (this.isTracking) {
+            // schedule next probe time based on dynamic interval
+            this.nextProbeTime = Date.now() + this.probeIntervalMs;
             try {
                 await this.sendProbe();
             } catch (err) {
                 logger.error(err, 'Error sending probe');
             }
-            const delay = Math.floor(Math.random() * 100) + 2000;
+            // use configured interval with a small random jitter for stealth
+            const delay = this.probeIntervalMs + Math.floor(Math.random() * 5000) - 2500;
+            this.nextProbeTime = Date.now() + delay;
             await new Promise(resolve => setTimeout(resolve, delay));
         }
     }

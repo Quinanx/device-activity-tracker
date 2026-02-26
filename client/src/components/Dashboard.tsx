@@ -36,6 +36,7 @@ interface ContactInfo {
     presence: string | null;
     profilePic: string | null;
     platform: Platform;
+    nextProbeTime?: number | null;
 }
 
 export function Dashboard({ connectionState }: DashboardProps) {
@@ -47,12 +48,17 @@ export function Dashboard({ connectionState }: DashboardProps) {
     const [error, setError] = useState<string | null>(null);
     const [privacyMode, setPrivacyMode] = useState(false);
     const [probeMethod, setProbeMethod] = useState<ProbeMethod>('delete');
+    const [probeInterval, setProbeInterval] = useState<number>(20000); // milliseconds (20 seconds default)
     const [showConnections, setShowConnections] = useState(false);
 
     useEffect(() => {
         function onTrackerUpdate(update: any) {
-            const { jid, ...data } = update;
+            const { jid, nextProbeTime, probeInterval: interval, ...data } = update;
             if (!jid) return;
+            if (interval !== undefined) {
+                // sync global interval if tracker sends one (in ms)
+                setProbeInterval(interval);
+            }
 
             setContacts(prev => {
                 const next = new Map(prev);
@@ -70,6 +76,9 @@ export function Dashboard({ connectionState }: DashboardProps) {
                     }
                     if (data.devices !== undefined) {
                         updatedContact.devices = data.devices;
+                    }
+                    if (nextProbeTime !== undefined) {
+                        updatedContact.nextProbeTime = nextProbeTime;
                     }
 
                     // Add to chart data
@@ -150,6 +159,10 @@ export function Dashboard({ connectionState }: DashboardProps) {
             setProbeMethod(method);
         }
 
+        function onProbeInterval(ms: number) {
+            setProbeInterval(ms);
+        }
+
         function onTrackedContacts(contacts: { id: string, platform: Platform }[]) {
             setContacts(prev => {
                 const next = new Map(prev);
@@ -187,10 +200,13 @@ export function Dashboard({ connectionState }: DashboardProps) {
         socket.on('contact-removed', onContactRemoved);
         socket.on('error', onError);
         socket.on('probe-method', onProbeMethod);
+        socket.on('probe-interval', onProbeInterval);
         socket.on('tracked-contacts', onTrackedContacts);
 
         // Request tracked contacts after listeners are set up
         socket.emit('get-tracked-contacts');
+
+        // the server will also emit the current interval shortly after connect
 
         return () => {
             socket.off('tracker-update', onTrackerUpdate);
@@ -200,6 +216,7 @@ export function Dashboard({ connectionState }: DashboardProps) {
             socket.off('contact-removed', onContactRemoved);
             socket.off('error', onError);
             socket.off('probe-method', onProbeMethod);
+            socket.off('probe-interval', onProbeInterval);
             socket.off('tracked-contacts', onTrackedContacts);
         };
     }, []);
@@ -215,6 +232,10 @@ export function Dashboard({ connectionState }: DashboardProps) {
 
     const handleProbeMethodChange = (method: ProbeMethod) => {
         socket.emit('set-probe-method', method);
+    };
+
+    const handleProbeIntervalChange = () => {
+        socket.emit('set-probe-interval', probeInterval);
     };
 
     return (
@@ -239,32 +260,53 @@ export function Dashboard({ connectionState }: DashboardProps) {
                     </div>
                     <div className="flex items-center gap-4">
                         {/* Probe Method Toggle */}
-                        <div className="flex items-center gap-2">
-                            <span className="text-sm text-gray-600">Probe Method:</span>
-                            <div className="flex rounded-lg overflow-hidden border border-gray-300">
+                        <div className="flex items-center gap-4">
+                            <div className="flex items-center gap-2">
+                                <span className="text-sm text-gray-600">Probe Method:</span>
+                                <div className="flex rounded-lg overflow-hidden border border-gray-300">
+                                    <button
+                                        onClick={() => handleProbeMethodChange('delete')}
+                                        className={`px-3 py-1.5 text-sm font-medium transition-all duration-200 flex items-center gap-1 ${
+                                            probeMethod === 'delete'
+                                                ? 'bg-purple-600 text-white'
+                                                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                                        }`}
+                                        title="Silent Delete Probe - Completely covert, target sees nothing"
+                                    >
+                                        <Trash2 size={14} />
+                                        Delete
+                                    </button>
+                                    <button
+                                        onClick={() => handleProbeMethodChange('reaction')}
+                                        className={`px-3 py-1.5 text-sm font-medium transition-all duration-200 flex items-center gap-1 ${
+                                            probeMethod === 'reaction'
+                                                ? 'bg-yellow-500 text-white'
+                                                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                                        }`}
+                                        title="Reaction Probe - Sends reactions to non-existent messages"
+                                    >
+                                        <Zap size={14} />
+                                        Reaction
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                                <span className="text-sm text-gray-600">Interval:</span>
+                                <input
+                                    type="number"
+                                    min={50}
+                                    step={50}
+                                    value={probeInterval}
+                                    onChange={(e) => setProbeInterval(Number(e.target.value))}
+                                    className="w-20 px-2 py-1 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                                />
+                                <span className="text-sm text-gray-600">ms</span>
                                 <button
-                                    onClick={() => handleProbeMethodChange('delete')}
-                                    className={`px-3 py-1.5 text-sm font-medium transition-all duration-200 flex items-center gap-1 ${
-                                        probeMethod === 'delete'
-                                            ? 'bg-purple-600 text-white'
-                                            : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                                    }`}
-                                    title="Silent Delete Probe - Completely covert, target sees nothing"
+                                    onClick={handleProbeIntervalChange}
+                                    className="px-2 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm"
                                 >
-                                    <Trash2 size={14} />
-                                    Delete
-                                </button>
-                                <button
-                                    onClick={() => handleProbeMethodChange('reaction')}
-                                    className={`px-3 py-1.5 text-sm font-medium transition-all duration-200 flex items-center gap-1 ${
-                                        probeMethod === 'reaction'
-                                            ? 'bg-yellow-500 text-white'
-                                            : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                                    }`}
-                                    title="Reaction Probe - Sends reactions to non-existent messages"
-                                >
-                                    <Zap size={14} />
-                                    Reaction
+                                    Set
                                 </button>
                             </div>
                         </div>
@@ -370,6 +412,7 @@ export function Dashboard({ connectionState }: DashboardProps) {
                             onRemove={() => handleRemove(contact.jid)}
                             privacyMode={privacyMode}
                             platform={contact.platform}
+                            nextProbeTime={contact.nextProbeTime}
                         />
                     ))}
                 </div>

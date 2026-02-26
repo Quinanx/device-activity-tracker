@@ -4,7 +4,11 @@ import { Login } from './components/Login';
 import { Dashboard } from './components/Dashboard';
 
 // Create socket with autoConnect disabled so we can add listeners before connecting
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001';
+// When running in a forwarded environment (Codespaces, remote containers, etc.)
+// localhost may not resolve correctly from the browser. Default to the
+// current origin so the socket connects back to whatever host served the
+// frontend unless an explicit API URL is provided via env.
+const API_URL = process.env.REACT_APP_API_URL || window.location.origin;
 export const socket: Socket = io(API_URL, { autoConnect: false });
 
 export type Platform = 'whatsapp' | 'signal';

@@ -79,6 +79,7 @@ async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
 
     const sock = makeWASocket({
+        version: [2, 3000, 1034074495], // Add this line
         auth: state,
         logger: pino({ level: 'silent' }),
         markOnlineOnConnect: true,

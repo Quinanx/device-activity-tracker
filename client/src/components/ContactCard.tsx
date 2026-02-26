@@ -1,7 +1,78 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { Square, Activity, Wifi, Smartphone, Monitor, MessageCircle } from 'lucide-react';
+import { Square, Activity, Wifi, Smartphone, Monitor, MessageCircle, Download, Clock } from 'lucide-react';
 import clsx from 'clsx';
+import { generateActivityPDF, exportActivityJSON, exportActivityCSV } from '../utils/pdfExport';
+
+// local analysis helpers
+function analyzeWakeUpTimes(data: TrackerData[], threshold: number): string | null {
+    if (data.length < 5) return null;
+    let consecutiveHigh = 0;
+    for (let i = 0; i < data.length; i++) {
+        const entry = data[i];
+        if (entry.rtt > threshold) {
+            consecutiveHigh++;
+        } else {
+            if (consecutiveHigh >= 5) {
+                return new Date(entry.timestamp).toLocaleTimeString();
+            }
+            consecutiveHigh = 0;
+        }
+    }
+    return null;
+}
+
+function analyzeSleepTime(data: TrackerData[], threshold: number): string | null {
+    if (data.length < 6) return null;
+    let consecutiveHigh = 0;
+    let startIdx = 0;
+    for (let i = 0; i < data.length; i++) {
+        if (data[i].rtt > threshold) {
+            if (consecutiveHigh === 0) startIdx = i;
+            consecutiveHigh++;
+            if (consecutiveHigh >= 6) {
+                return new Date(data[startIdx].timestamp).toLocaleTimeString();
+            }
+        } else {
+            consecutiveHigh = 0;
+        }
+    }
+    return null;
+}
+
+function calculateActiveMinutes(data: TrackerData[], threshold: number): number {
+    return data.filter(d => d.rtt < threshold).length * 5;
+}
+
+function detectDeviceChanges(data: TrackerData[]): number {
+    if (data.length < 2) return 0;
+    let changes = 0;
+    let prev = data[0].state;
+    for (let i = 1; i < data.length; i++) {
+        if (data[i].state !== prev) {
+            changes++;
+            prev = data[i].state;
+        }
+    }
+    return changes;
+}
+
+function analyzeFrequencyByHour(data: TrackerData[], threshold: number) {
+    const freq: { hour: number; wakeUps: number }[] = [];
+    const hours: { [hour: number]: number } = {};
+    for (let h = 0; h < 24; h++) hours[h] = 0;
+    let prevState = 'offline';
+    for (const entry of data) {
+        const hour = new Date(entry.timestamp).getHours();
+        const state = entry.rtt < threshold ? 'online' : 'offline';
+        if (prevState === 'offline' && state === 'online') {
+            hours[hour]++;
+        }
+        prevState = state;
+    }
+    for (let h = 0; h < 24; h++) freq.push({ hour: h, wakeUps: hours[h] });
+    return freq;
+}
 
 type Platform = 'whatsapp' | 'signal';
 
@@ -32,6 +103,8 @@ interface ContactCardProps {
     onRemove: () => void;
     privacyMode?: boolean;
     platform?: Platform;
+    nextProbeTime?: number | null;
+
 }
 
 export function ContactCard({
@@ -44,8 +117,117 @@ export function ContactCard({
     profilePic,
     onRemove,
     privacyMode = false,
-    platform = 'whatsapp'
+    platform = 'whatsapp',
+    nextProbeTime
 }: ContactCardProps) {
+    const [countdown, setCountdown] = useState<number | null>(null);
+    const [isExporting, setIsExporting] = useState(false);
+    const [exportMenu, setExportMenu] = useState(false);
+
+    // Update countdown timer
+    useEffect(() => {
+        if (!nextProbeTime) return;
+
+        const updateCountdown = () => {
+            const remaining = Math.max(0, nextProbeTime - Date.now());
+            setCountdown(remaining);
+
+            if (remaining === 0) {
+                setCountdown(null);
+            }
+        };
+
+        updateCountdown();
+        const interval = setInterval(updateCountdown, 1000);
+        return () => clearInterval(interval);
+    }, [nextProbeTime]);
+
+    const formatCountdown = (ms: number): string => {
+        const seconds = Math.floor((ms / 1000) % 60);
+        const minutes = Math.floor((ms / 60000) % 60);
+        const hours = Math.floor(ms / 3600000);
+
+        if (hours > 0) {
+            return `${hours}h ${minutes}m ${seconds}s`;
+        } else if (minutes > 0) {
+            return `${minutes}m ${seconds}s`;
+        } else {
+            return `${seconds}s`;
+        }
+    };
+
+    const handleExportPDF = async () => {
+        setIsExporting(true);
+        try {
+            const chartElement = document.getElementById(`chart-${jid}`);
+
+            const threshold = lastData?.threshold || 0;
+            const pdfData = {
+                contactNumber: displayNumber,
+                platform,
+                wakeUpTime: analyzeWakeUpTimes(data, threshold),
+                sleepStart: analyzeSleepTime(data, threshold),
+                totalActiveMinutes: calculateActiveMinutes(data, threshold),
+                deviceChanges: detectDeviceChanges(data),
+                frequencies: analyzeFrequencyByHour(data, threshold),
+                currentStatus: currentStatus,
+                avgRtt: lastData?.avg || 0,
+                threshold: threshold
+            } as any;
+
+            await generateActivityPDF(pdfData, chartElement || undefined);
+        } catch (error) {
+            console.error('Error exporting PDF:', error);
+        } finally {
+            setIsExporting(false);
+            setExportMenu(false);
+        }
+    };
+
+    const handleExportJSON = () => {
+        try {
+            const threshold = lastData?.threshold || 0;
+            exportActivityJSON({
+                contactNumber: displayNumber,
+                platform,
+                wakeUpTime: analyzeWakeUpTimes(data, threshold),
+                sleepStart: analyzeSleepTime(data, threshold),
+                totalActiveMinutes: calculateActiveMinutes(data, threshold),
+                deviceChanges: detectDeviceChanges(data),
+                frequencies: analyzeFrequencyByHour(data, threshold),
+                currentStatus: currentStatus,
+                avgRtt: lastData?.avg || 0,
+                threshold: threshold
+            });
+        } catch (error) {
+            console.error('Error exporting JSON:', error);
+        }
+        setExportMenu(false);
+    };
+
+    const handleExportCSV = () => {
+        try {
+            const threshold = lastData?.threshold || 0;
+            exportActivityCSV(
+                {
+                    contactNumber: displayNumber,
+                    platform,
+                    wakeUpTime: analyzeWakeUpTimes(data, threshold),
+                    sleepStart: analyzeSleepTime(data, threshold),
+                    totalActiveMinutes: calculateActiveMinutes(data, threshold),
+                    deviceChanges: detectDeviceChanges(data),
+                    frequencies: analyzeFrequencyByHour(data, threshold),
+                    currentStatus: currentStatus,
+                    avgRtt: lastData?.avg || 0,
+                    threshold: threshold
+                },
+                data.map(d => ({ timestamp: d.timestamp, rtt: d.rtt, state: d.state }))
+            );
+        } catch (error) {
+            console.error('Error exporting CSV:', error);
+        }
+        setExportMenu(false);
+    };
     const lastData = data[data.length - 1];
     const currentStatus = devices.length > 0
         ? (devices.find(d => d.state === 'OFFLINE')?.state ||
@@ -58,7 +240,7 @@ export function ContactCard({
 
     return (
         <div className="bg-gradient-to-br from-white to-gray-50 rounded-xl shadow-lg border border-gray-200 overflow-hidden">
-            {/* Header with Stop Button */}
+            {/* Header with Buttons */}
             <div className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
                 <div className="flex items-center gap-3">
                     <span className={clsx(
@@ -70,12 +252,46 @@ export function ContactCard({
                     </span>
                     <h3 className="text-lg font-semibold text-gray-900">{blurredNumber}</h3>
                 </div>
-                <button
-                    onClick={onRemove}
-                    className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center gap-2 font-medium transition-colors text-sm"
-                >
-                    <Square size={16} /> Stop
-                </button>
+                <div className="flex items-center gap-2">
+                    {/* Export Dropdown */}
+                    <div className="relative">
+                        <button
+                            onClick={() => setExportMenu(!exportMenu)}
+                            disabled={isExporting}
+                            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2 font-medium transition-colors text-sm"
+                        >
+                            <Download size={16} /> Export
+                        </button>
+                        {exportMenu && (
+                            <div className="absolute right-0 mt-2 w-48 bg-white border border-gray-200 rounded-lg shadow-lg z-10">
+                                <button
+                                    onClick={handleExportPDF}
+                                    className="w-full text-left px-4 py-2 hover:bg-gray-50 border-b border-gray-100 first:rounded-t-lg"
+                                >
+                                    📄 Export as PDF
+                                </button>
+                                <button
+                                    onClick={handleExportJSON}
+                                    className="w-full text-left px-4 py-2 hover:bg-gray-50 border-b border-gray-100"
+                                >
+                                    📋 Export as JSON
+                                </button>
+                                <button
+                                    onClick={handleExportCSV}
+                                    className="w-full text-left px-4 py-2 hover:bg-gray-50 rounded-b-lg last:rounded-b-lg"
+                                >
+                                    📊 Export as CSV
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                    <button
+                        onClick={onRemove}
+                        className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center gap-2 font-medium transition-colors text-sm"
+                    >
+                        <Square size={16} /> Stop
+                    </button>
+                </div>
             </div>
 
             <div className="p-6">
@@ -131,6 +347,16 @@ export function ContactCard({
                                 <span className="flex items-center gap-1"><Smartphone size={16} /> Devices</span>
                                 <span className="font-medium">{deviceCount || 0}</span>
                             </div>
+                            {countdown !== null && (
+                                <div className="flex justify-between items-center text-sm bg-blue-50 p-2 rounded border border-blue-100">
+                                    <span className="flex items-center gap-1 text-blue-700">
+                                        <Clock size={16} /> Next Probe
+                                    </span>
+                                    <span className="font-mono font-semibold text-blue-600">
+                                        {formatCountdown(countdown)}
+                                    </span>
+                                </div>
+                            )}
                         </div>
 
                         {/* Device List */}
@@ -178,7 +404,10 @@ export function ContactCard({
                         </div>
 
                         {/* Chart */}
-                        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 h-[300px]">
+                        <div
+                            id={`chart-${jid}`}
+                            className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 h-[300px]"
+                        >
                             <h5 className="text-sm font-medium text-gray-500 mb-4">RTT History & Threshold</h5>
                             <ResponsiveContainer width="100%" height="100%">
                                 <LineChart data={data}>
@@ -186,7 +415,10 @@ export function ContactCard({
                                     <XAxis dataKey="timestamp" hide />
                                     <YAxis domain={['auto', 'auto']} />
                                     <Tooltip
-                                        labelFormatter={(t: number) => new Date(t).toLocaleTimeString()}
+                                        labelFormatter={(label: any) => {
+                                            const timestamp = Number(label);
+                                            return isNaN(timestamp) ? '' : new Date(timestamp).toLocaleTimeString();
+                                        }}
                                         contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
                                     />
                                     <Line type="monotone" dataKey="avg" stroke="#3b82f6" strokeWidth={2} dot={false} name="Avg RTT" isAnimationActive={false} />

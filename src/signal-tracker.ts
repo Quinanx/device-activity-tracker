@@ -77,6 +77,9 @@ export class SignalTracker {
     private pendingProbeStartTime: number | null = null;
     private pendingProbeTimeout: NodeJS.Timeout | null = null;
     private probeResolve: (() => void) | null = null;
+    private nextProbeTime: number | null = null; // Track when next probe will be sent
+    private probeIntervalMs: number;                  // current interval between probes
+    private static readonly DEFAULT_PROBE_INTERVAL_MS = 300000; // 5 minutes in milliseconds for stealth tracking
 
     constructor(
         apiUrl: string,
@@ -88,6 +91,7 @@ export class SignalTracker {
         this.senderNumber = senderNumber;
         this.targetNumber = targetNumber;
         logger.setDebugMode(debugMode);
+        this.probeIntervalMs = SignalTracker.DEFAULT_PROBE_INTERVAL_MS;
     }
 
     public setProbeMethod(method: ProbeMethod) {
@@ -97,6 +101,25 @@ export class SignalTracker {
 
     public getProbeMethod(): ProbeMethod {
         return this.probeMethod;
+    }
+
+    public getNextProbeTime(): number | null {
+        return this.nextProbeTime;
+    }
+
+    public setProbeInterval(ms: number) {
+        this.probeIntervalMs = ms;
+        logger.info(`Probe interval updated to ${ms}ms`);
+        if (this.nextProbeTime) {
+            const remaining = this.nextProbeTime - Date.now();
+            if (remaining > ms) {
+                this.nextProbeTime = Date.now() + ms;
+            }
+        }
+    }
+
+    public getProbeInterval(): number {
+        return this.probeIntervalMs;
     }
 
     /**
@@ -230,8 +253,9 @@ export class SignalTracker {
             } catch (err) {
                 logger.debug('Error sending probe:', err);
             }
-            // Small delay between probes
-            const delay = Math.floor(Math.random() * 1000) + 1000;
+            // use configured interval with a little jitter
+            const delay = this.probeIntervalMs + Math.floor(Math.random() * 5000) - 2500;
+            this.nextProbeTime = Date.now() + delay;
             await new Promise(resolve => setTimeout(resolve, delay));
         }
     }
