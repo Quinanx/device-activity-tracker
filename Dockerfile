@@ -1,4 +1,4 @@
-# Backend Dockerfile
+# Backend Dockerfile with React frontend
 FROM node:20-alpine
 
 WORKDIR /app
@@ -10,8 +10,18 @@ RUN apk add --no-cache git python3 make g++
 COPY package*.json ./
 COPY tsconfig.json ./
 
-# Install dependencies (ignore postinstall script that tries to install client deps)
-RUN npm install --ignore-scripts
+# Copy client package files
+COPY client/package*.json ./client/
+
+# Install dependencies for backend
+RUN npm install
+
+# Install and build React client
+WORKDIR /app/client
+RUN npm install && npm run build
+
+# Back to root
+WORKDIR /app
 
 # Copy source code
 COPY src ./src
@@ -25,6 +35,6 @@ ENV PORT=${PORT}
 EXPOSE ${PORT}
 
 # Create directory for WhatsApp auth state
-RUN mkdir -p /app/baileys_auth_info
+RUN mkdir -p /app/auth_info_baileys
 
 CMD ["node", "dist/server.js"]
