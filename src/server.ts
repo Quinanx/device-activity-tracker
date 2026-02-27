@@ -69,7 +69,7 @@ let isWhatsAppConnected = false;
 let isSignalConnected = false;
 let signalAccountNumber: string | null = null;
 let globalProbeMethod: ProbeMethod = 'delete'; // Default to delete method
-let globalProbeInterval = 20000; // default 20 seconds in ms
+let globalProbeInterval = 1000; // default 1 second in ms
 let currentWhatsAppQr: string | null = null; // Store current QR code for new clients
 
 // Platform type for contacts
