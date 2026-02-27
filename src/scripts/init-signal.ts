@@ -15,9 +15,10 @@ try {
   try {
     execSync('docker info', { stdio: 'ignore' });
   } catch (e) {
-    console.error('⚠️  Docker is not running.');
-    console.error('   Please start Docker Desktop and try again.');
-    process.exit(1);
+    console.warn('⚠️  Docker is not running. Signal API container will not be started.');
+    console.warn('   Please start Docker Desktop or a Docker daemon if you want to use Signal tracking.');
+    // Abort initialization but exit cleanly; server process will start anyway.
+    process.exit(0);
   }
 
   // 2. Check if container exists using 'docker inspect'
@@ -36,5 +37,6 @@ try {
 } catch (error) {
   // Catch any other unexpected errors
   console.error('❌ Failed to initialize Signal API container:', error);
-  process.exit(1);
+  // don't exit the whole process; this script is just an initializer
+  // the server can continue running without the Signal backend
 }

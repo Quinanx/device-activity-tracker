@@ -60,6 +60,9 @@ cp .env.example .env
 docker compose up --build
 ```
 
+Running the compose stack will start both the backend (Express/Socket.IO) and the Signal CLI REST API container.  The backend will work without Docker, but signal‑based tracking requires the container to be running.
+
+
 The application will be available at:
 - Frontend: [http://localhost:3000](http://localhost:3000) (or your configured `CLIENT_PORT`)
 - Backend: [http://localhost:3001](http://localhost:3001) (or your configured `BACKEND_PORT`)
@@ -74,12 +77,14 @@ docker compose down
 #### Web Interface
 
 ```bash
-# Terminal 1: Start backend
+# Terminal 1: Start backend (Signal API init is attempted but not required)
 npm run start:server
 
 # Terminal 2: Start frontend
 npm run start:client
 ```
+
+The `start:server` script now gracefully skips the Signal API launch if Docker isn’t available, so the server will come up regardless.  You’ll see a warning about Docker; that only affects Signal support.  When you do have Docker running you can either re‑run the script or start the API manually with `npm run start:signal-api`.
 
 Open `http://localhost:3000`, scan QR code with WhatsApp, then enter phone number to track (e.g., `491701234567`).
 
