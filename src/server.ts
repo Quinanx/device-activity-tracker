@@ -32,14 +32,19 @@ app.use(cors());
 
 // if a React build has been created, serve it
 const clientBuildPath = path.join(__dirname, '../client/build');
+console.log('[SERVER] Looking for client build at:', clientBuildPath);
+console.log('[SERVER] __dirname is:', __dirname);
+console.log('[SERVER] Client build exists:', fs.existsSync(clientBuildPath));
+
 if (fs.existsSync(clientBuildPath)) {
-    console.log('[SERVER] Serving static client from', clientBuildPath);
+    console.log('[SERVER] ✅ Serving static client from', clientBuildPath);
     app.use(express.static(clientBuildPath));
     // fallback to index.html for any non-API route
     app.use((req, res) => {
         res.sendFile(path.join(clientBuildPath, 'index.html'));
     });
 } else {
+    console.log('[SERVER] ⚠️  Client build NOT found at', clientBuildPath);
     // basic route so navigating to server port shows something
     app.get('/', (req, res) => {
         res.send('Device Activity Tracker API running');
